@@ -32,9 +32,19 @@ enum class Effect(val label: String, val default: Float) {
     SOLARIZE("Solarize", 0.5f),
     THERMAL("Thermal", 0.7f),
     MIRROR("Mirror", 1f),
-    PIXELATE("Pixelate", 0.3f);
+    PIXELATE("Pixelate", 0.3f),
+    DITHER("1-Bit Dither", 0.6f),
+    EDGE_NEON("Edge Neon", 0.7f),
+    SWIRL("Swirl", 0.4f),
+    FISHEYE("Fisheye", 0.5f),
+    PRISM("Prism", 0.4f),
+    HUE_CYCLE("Hue Cycle", 0.5f),
+    KALEIDO("Kaleido", 0.4f),
+    BLOCK_INVERT("Block Invert", 0.4f),
+    GHOST("Ghost Trails", 0.6f),
+    SLIT_SCAN("Slit Scan", 0.5f);
 
-    fun apply(f: Frame, amount: Float, rnd: Random) {
+    fun apply(f: Frame, amount: Float, rnd: Random, ctx: FxContext?) {
         val a = amount.coerceIn(0f, 1f)
         if (a <= 0.001f) return
         when (this) {
@@ -54,21 +64,41 @@ enum class Effect(val label: String, val default: Float) {
             THERMAL -> thermal(f, a)
             MIRROR -> mirror(f, a)
             PIXELATE -> pixelate(f, a)
+            DITHER -> dither(f, a)
+            EDGE_NEON -> edgeNeon(f, a)
+            SWIRL -> swirl(f, a)
+            FISHEYE -> fisheye(f, a)
+            PRISM -> prism(f, a)
+            HUE_CYCLE -> hueCycle(f, a, ctx)
+            KALEIDO -> kaleido(f, a)
+            BLOCK_INVERT -> blockInvert(f, a, rnd)
+            GHOST -> ghost(f, a, ctx)
+            SLIT_SCAN -> slitScan(f, a, ctx)
         }
     }
 }
 
 data class EffectLayer(val effect: Effect, val amount: Float = effect.default)
 
+/**
+ * State carried between frames of a live stream or video, so temporal effects
+ * (Ghost Trails, Slit Scan, Hue Cycle) can see the past. Null for still photos.
+ */
+class FxContext {
+    var frame = 0L
+    internal val store = HashMap<Effect, Any>()
+}
+
 object Bender {
-    fun render(src: Bitmap, chain: List<EffectLayer>, seed: Long): Bitmap {
+    fun render(src: Bitmap, chain: List<EffectLayer>, seed: Long, ctx: FxContext? = null): Bitmap {
         val w = src.width
         val h = src.height
         val px = IntArray(w * h)
         src.getPixels(px, 0, w, 0, 0, w, h)
         val f = Frame(px, w, h)
         val rnd = Random(seed)
-        for (layer in chain) layer.effect.apply(f, layer.amount, rnd)
+        for (layer in chain) layer.effect.apply(f, layer.amount, rnd, ctx)
+        ctx?.let { it.frame++ }
         val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         out.setPixels(f.px, 0, w, 0, 0, w, h)
         return out
@@ -77,12 +107,12 @@ object Bender {
 
 // ---------- helpers ----------
 
-private fun r(c: Int) = (c shr 16) and 0xFF
-private fun g(c: Int) = (c shr 8) and 0xFF
-private fun b(c: Int) = c and 0xFF
-private fun rgb(r: Int, g: Int, b: Int) =
+internal fun r(c: Int) = (c shr 16) and 0xFF
+internal fun g(c: Int) = (c shr 8) and 0xFF
+internal fun b(c: Int) = c and 0xFF
+internal fun rgb(r: Int, g: Int, b: Int) =
     (0xFF shl 24) or (r.coerceIn(0, 255) shl 16) or (g.coerceIn(0, 255) shl 8) or b.coerceIn(0, 255)
-private fun luma(c: Int) = (r(c) * 77 + g(c) * 150 + b(c) * 29) shr 8
+internal fun luma(c: Int) = (r(c) * 77 + g(c) * 150 + b(c) * 29) shr 8
 
 // ---------- effects ----------
 

@@ -83,12 +83,38 @@ object ImageIO {
         }
     }
 
-    fun share(context: Context, uri: Uri) {
+    /** Copies a finished MP4 into Movies/BendCam. */
+    fun saveVideo(context: Context, file: java.io.File): Uri? {
+        val values = ContentValues().apply {
+            put(MediaStore.Video.Media.DISPLAY_NAME, "BendCam_${System.currentTimeMillis()}.mp4")
+            put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/BendCam")
+                put(MediaStore.Video.Media.IS_PENDING, 1)
+            }
+        }
+        val cr = context.contentResolver
+        val uri = cr.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values) ?: return null
+        return try {
+            cr.openOutputStream(uri)?.use { out -> file.inputStream().use { it.copyTo(out) } }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                values.clear()
+                values.put(MediaStore.Video.Media.IS_PENDING, 0)
+                cr.update(uri, values, null, null)
+            }
+            uri
+        } catch (e: Exception) {
+            cr.delete(uri, null, null)
+            null
+        }
+    }
+
+    fun share(context: Context, uri: Uri, mime: String = "image/jpeg") {
         val send = Intent(Intent.ACTION_SEND).apply {
-            type = "image/jpeg"
+            type = mime
             putExtra(Intent.EXTRA_STREAM, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        context.startActivity(Intent.createChooser(send, "Share bent image"))
+        context.startActivity(Intent.createChooser(send, "Share"))
     }
 }

@@ -66,6 +66,12 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.bendcam.app.ImageIO
 import com.bendcam.app.effects.Bender
 import com.bendcam.app.effects.EffectLayer
+import com.bendcam.app.effects.FxContext
+import com.bendcam.app.video.LiveRecorder
+import kotlinx.coroutines.delay
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.foundation.shape.RoundedCornerShape
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
@@ -121,6 +127,47 @@ private fun LiveBend(chain: ChainState, onChain: (ChainState) -> Unit, modifier:
     var frozenSeed by remember { mutableStateOf<Long?>(null) } // pause = keep glitch pattern still
     var fps by remember { mutableIntStateOf(0) }
     var capturing by remember { mutableStateOf(false) }
+    var videoMode by remember { mutableStateOf(false) }
+    var recorder by remember { mutableStateOf<LiveRecorder?>(null) }
+    var savingVideo by remember { mutableStateOf(false) }
+    var elapsed by remember { mutableLongStateOf(0L) }
+    val recorderRef = remember { AtomicReference<LiveRecorder?>(null) }
+    val hasMic = {
+        ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+    }
+    val askMic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
+    fun stopRecording() {
+        val rec = recorderRef.getAndSet(null) ?: return
+        recorder = null
+        savingVideo = true
+        Thread {
+            val uri = rec.stop()
+            ContextCompat.getMainExecutor(context).execute {
+                savingVideo = false
+                Toast.makeText(
+                    context, if (uri != null) "Video saved to Movies/BendCam" else "Video save failed",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }.start()
+    }
+
+    fun startRecording() {
+        val f = frame ?: return
+        val rec = try {
+            LiveRecorder(context, f.width, f.height, hasMic())
+        } catch (e: Exception) {
+            Toast.makeText(context, "Recorder unavailable: ${e.message}", Toast.LENGTH_SHORT).show(); return
+        }
+        recorder = rec
+        recorderRef.set(rec)
+    }
+
+    LaunchedEffect(recorder) {
+        val rec = recorder ?: return@LaunchedEffect
+        while (true) { elapsed = System.currentTimeMillis() - rec.startedAt; delay(250) }
+    }
 
     // Analyzer runs off the main thread; feed it the latest settings through atomics.
     val chainRef = remember { AtomicReference<List<EffectLayer>>(chain.chain) }
@@ -139,6 +186,7 @@ private fun LiveBend(chain: ChainState, onChain: (ChainState) -> Unit, modifier:
         val providerFuture = ProcessCameraProvider.getInstance(context)
         var frameCount = 0
         var windowStart = System.currentTimeMillis()
+        val fx = FxContext() // history for temporal effects (Ghost Trails, Slit Scan...)
 
         val analysis = ImageAnalysis.Builder()
             .setResolutionSelector(
@@ -152,8 +200,9 @@ private fun LiveBend(chain: ChainState, onChain: (ChainState) -> Unit, modifier:
         analysis.setAnalyzer(executor) { proxy ->
             val out = try {
                 val oriented = orient(proxy, front, 720)
-                Bender.render(oriented, chainRef.get(), seedRef.get() ?: Random.nextLong())
+                Bender.render(oriented, chainRef.get(), seedRef.get() ?: Random.nextLong(), fx)
             } catch (_: Throwable) { null } finally { proxy.close() }
+            if (out != null) recorderRef.get()?.onFrame(out)
             if (out != null && alive.get()) {
                 frameCount++
                 val now = System.currentTimeMillis()
@@ -182,6 +231,7 @@ private fun LiveBend(chain: ChainState, onChain: (ChainState) -> Unit, modifier:
         }, ContextCompat.getMainExecutor(context))
 
         onDispose {
+            stopRecording() // camera switched or screen left
             alive.set(false)
             analysis.clearAnalyzer()
             if (providerFuture.isDone) runCatching { providerFuture.get().unbindAll() }
@@ -221,7 +271,7 @@ private fun LiveBend(chain: ChainState, onChain: (ChainState) -> Unit, modifier:
     }
 
     val legacyWrite = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
-        if (ok) capture()
+        if (ok && !videoMode) capture()
     }
 
     Column(modifier) {
@@ -237,6 +287,35 @@ private fun LiveBend(chain: ChainState, onChain: (ChainState) -> Unit, modifier:
                 modifier = Modifier.align(Alignment.TopStart).padding(10.dp)
                     .background(Color.Black.copy(alpha = 0.5f)).padding(horizontal = 6.dp, vertical = 2.dp)
             )
+            if (recorder != null || savingVideo) {
+                val secs = elapsed / 1000
+                Text(
+                    if (savingVideo) "SAVING…" else "REC %d:%02d".format(secs / 60, secs % 60),
+                    color = Color.White, fontSize = 13.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold,
+                    modifier = Modifier.align(Alignment.TopCenter).padding(10.dp)
+                        .background(Hot, RoundedCornerShape(4.dp)).padding(horizontal = 8.dp, vertical = 2.dp)
+                )
+            }
+            Row(
+                Modifier.align(Alignment.BottomCenter).padding(bottom = 108.dp)
+                    .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(50)).padding(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                for ((label, isVideo) in listOf("PHOTO" to false, "VIDEO" to true)) {
+                    val sel = videoMode == isVideo
+                    Text(
+                        label, color = if (sel) Color.Black else Color.White, fontSize = 12.sp,
+                        fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold,
+                        modifier = Modifier.clip(RoundedCornerShape(50))
+                            .background(if (sel) Color.White else Color.Transparent)
+                            .clickable(enabled = recorder == null) {
+                                videoMode = isVideo
+                                if (isVideo && !hasMic()) askMic.launch(Manifest.permission.RECORD_AUDIO)
+                            }
+                            .padding(horizontal = 14.dp, vertical = 6.dp)
+                    )
+                }
+            }
             Row(
                 Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(bottom = 16.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly,
@@ -251,19 +330,30 @@ private fun LiveBend(chain: ChainState, onChain: (ChainState) -> Unit, modifier:
                         if (frozenSeed == null) "Freeze glitch" else "Animate glitch", tint = Color.White
                     )
                 }
+                val isRec = recorder != null
                 Box(
                     Modifier.size(72.dp).clip(CircleShape)
-                        .border(BorderStroke(4.dp, Color.White), CircleShape)
-                        .padding(8.dp).clip(CircleShape)
-                        .background(if (capturing) Color.Gray else Hot)
-                        .clickable {
-                            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-                                legacyWrite.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
-                            } else capture()
-                        }
-                )
+                        .border(BorderStroke(4.dp, if (videoMode) Hot else Color.White), CircleShape)
+                        .clickable(enabled = !savingVideo) {
+                            when {
+                                Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
+                                    ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) !=
+                                    PackageManager.PERMISSION_GRANTED ->
+                                    legacyWrite.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                                videoMode -> if (isRec) stopRecording() else startRecording()
+                                else -> capture()
+                            }
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Box(
+                        if (isRec) Modifier.size(28.dp).clip(RoundedCornerShape(6.dp)).background(Hot)
+                        else Modifier.size(56.dp).clip(CircleShape)
+                            .background(if (capturing || savingVideo) Color.Gray else Hot)
+                    )
+                }
                 IconButton(
-                    onClick = { front = !front },
+                    onClick = { if (recorder == null) front = !front },
                     modifier = Modifier.background(Color.Black.copy(alpha = 0.5f), CircleShape)
                 ) { Icon(Icons.Default.Cameraswitch, "Switch camera", tint = Color.White) }
             }

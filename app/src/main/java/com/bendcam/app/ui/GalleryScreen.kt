@@ -59,6 +59,17 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.random.Random
+import com.bendcam.app.video.VideoBender
+import com.bendcam.app.video.VideoInfo
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.TextButton
+import androidx.compose.material.icons.filled.Movie
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.foundation.shape.RoundedCornerShape
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.isActive
 
 @Composable
 fun GalleryScreen(
@@ -76,19 +87,37 @@ fun GalleryScreen(
     var comparing by remember { mutableStateOf(false) }
     var seed by rememberSaveable { mutableLongStateOf(Random.nextLong()) }
     var lastSaved by remember { mutableStateOf<Uri?>(null) }
+    var video by remember { mutableStateOf<VideoInfo?>(null) }
+    var scrub by rememberSaveable { mutableFloatStateOf(0f) }
+    var exportProgress by remember { mutableStateOf<Float?>(null) }
+    var exportJob by remember { mutableStateOf<Job?>(null) }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { picked ->
-        if (picked != null) uri = picked
+        if (picked != null) { uri = picked; scrub = 0f }
     }
-    val pick = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
+    val pick = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)) }
 
     LaunchedEffect(uri) {
         val u = uri ?: return@LaunchedEffect
         busy = true
-        source = withContext(Dispatchers.IO) { runCatching { ImageIO.load(context, u) }.onFailure { android.util.Log.e("BendCam", "load failed \$u", it) }.getOrNull() }
-        if (source == null) Toast.makeText(context, "Couldn't open that image", Toast.LENGTH_SHORT).show()
+        val isVideo = context.contentResolver.getType(u)?.startsWith("video/") == true
+        video = if (isVideo) withContext(Dispatchers.IO) { VideoBender.info(context, u) } else null
+        source = withContext(Dispatchers.IO) {
+            runCatching {
+                if (isVideo) VideoBender.frameAt(context, u, scrub, 1080) else ImageIO.load(context, u)
+            }.onFailure { android.util.Log.e("BendCam", "load failed", it) }.getOrNull()
+        }
+        if (source == null) Toast.makeText(context, "Couldn't open that file", Toast.LENGTH_SHORT).show()
         lastSaved = null
         busy = false
+    }
+
+    // Scrubbing a video: refresh the preview frame.
+    LaunchedEffect(scrub) {
+        val u = uri ?: return@LaunchedEffect
+        if (video == null) return@LaunchedEffect
+        delay(120)
+        withContext(Dispatchers.IO) { VideoBender.frameAt(context, u, scrub, 1080) }?.let { source = it }
     }
 
     LaunchedEffect(source, chain.chain, seed) {
@@ -100,7 +129,35 @@ fun GalleryScreen(
         busy = false
     }
 
+    fun exportVideo(thenShare: Boolean) {
+        val u = uri ?: return
+        val cached = lastSaved
+        if (cached != null) { if (thenShare) ImageIO.share(context, cached, "video/mp4"); return }
+        if (exportJob != null) return
+        val layers = chain.chain
+        exportProgress = 0f
+        exportJob = scope.launch {
+            val saved = withContext(Dispatchers.Default) {
+                val job = coroutineContext
+                VideoBender.export(
+                    context, u, layers, seed, 1280,
+                    onProgress = { p -> scope.launch { exportProgress = p } },
+                    cancelled = { !job.isActive },
+                )
+            }
+            exportProgress = null
+            exportJob = null
+            lastSaved = saved
+            when {
+                saved == null -> Toast.makeText(context, "Video export failed", Toast.LENGTH_SHORT).show()
+                thenShare -> ImageIO.share(context, saved, "video/mp4")
+                else -> Toast.makeText(context, "Saved to Movies/BendCam", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     fun doSave(thenShare: Boolean) {
+        if (video != null) { exportVideo(thenShare); return }
         val bmp = rendered ?: return
         val cached = lastSaved
         if (cached != null) { if (thenShare) ImageIO.share(context, cached); return }
@@ -128,7 +185,7 @@ fun GalleryScreen(
         ) {
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = Color.White) }
             Text(
-                "GALLERY BEND", color = Color.White, fontFamily = FontFamily.Monospace,
+                if (video != null) "VIDEO BEND" else "GALLERY BEND", color = Color.White, fontFamily = FontFamily.Monospace,
                 fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f)
             )
             IconButton(onClick = pick) { Icon(Icons.Default.AddPhotoAlternate, "Pick photo", tint = Color.White) }
@@ -142,7 +199,11 @@ fun GalleryScreen(
                 },
                 enabled = rendered != null
             ) {
-                Icon(Icons.Default.Download, "Save", tint = if (rendered != null) Hot else Color.DarkGray)
+                Icon(
+                    if (video != null) Icons.Default.Movie else Icons.Default.Download,
+                    if (video != null) "Export video" else "Save",
+                    tint = if (rendered != null) Hot else Color.DarkGray
+                )
             }
         }
 
@@ -179,9 +240,38 @@ fun GalleryScreen(
                     }
                 }
             }
+            exportProgress?.let { p ->
+                Column(
+                    Modifier.align(Alignment.Center).background(Panel, RoundedCornerShape(12.dp)).padding(20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text("BENDING VIDEO ${(p * 100).toInt().coerceAtMost(100)}%", color = Color.White,
+                        fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                    LinearProgressIndicator(progress = { p.coerceIn(0f, 1f) }, color = Hot, trackColor = Color(0xFF33333A))
+                    TextButton(onClick = { exportJob?.cancel() }) { Text("Cancel", color = Cyan) }
+                }
+            }
             if (busy) CircularProgressIndicator(color = Cyan, modifier = Modifier.size(36.dp).align(Alignment.BottomEnd).padding(8.dp))
         }
 
+        video?.let { v ->
+            Row(
+                Modifier.fillMaxWidth().background(Panel).padding(horizontal = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                val t = (v.durationMs * scrub / 1000).toInt()
+                Text(
+                    "%d:%02d / %d:%02d".format(t / 60, t % 60, v.durationMs / 60000, v.durationMs / 1000 % 60),
+                    color = Color(0xFFB0B0B8), fontFamily = FontFamily.Monospace, fontSize = 12.sp
+                )
+                Slider(
+                    value = scrub, onValueChange = { scrub = it }, enabled = exportProgress == null,
+                    modifier = Modifier.weight(1f).padding(start = 12.dp),
+                    colors = SliderDefaults.colors(thumbColor = Cyan, activeTrackColor = Cyan, inactiveTrackColor = Color(0xFF33333A))
+                )
+            }
+        }
         EffectControls(
             state = chain,
             onChange = onChain,

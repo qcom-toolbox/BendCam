@@ -1,13 +1,14 @@
 # BendCam
 
-Circuit-bent camera simulator for Android. Bend photos from your gallery, or point the live camera at the world and watch it break in real time.
+Circuit-bent camera simulator for Android. Bend photos and videos from your gallery, or point the live camera at the world and watch it break in real time, then record it.
 
 ## Features
 
-- **Gallery bend**: pick any photo (system photo picker, no storage permission), stack effects, tune each one, hold the image to compare with the original, save to `Pictures/BendCam` or share.
-- **Live camera**: real-time glitch viewfinder (CameraX), front/back switch, freeze the glitch pattern, full-resolution capture with the same effect chain.
-- **Share-to-BendCam**: share an image from any app to open it directly in the editor.
-- **16 effects**, all stackable with per-effect intensity:
+- **Gallery bend**: pick any photo or video (system photo picker, no storage permission), stack effects, tune each one, hold the image to compare with the original, save to `Pictures/BendCam` or share.
+- **Video bend**: scrub through a clip to preview the effect chain, then export the whole video (up to 720p, 30 fps, original audio kept) to `Movies/BendCam`.
+- **Live camera**: real-time glitch viewfinder (CameraX), front/back switch, freeze the glitch pattern, full-resolution photo capture, and **video recording** of the bent feed with microphone audio.
+- **Share-to-BendCam**: share an image or video from any app to open it directly in the editor.
+- **26 effects**, all stackable with per-effect intensity. Temporal effects (Ghost Trails, Slit Scan, Hue Cycle) remember previous frames in live view and video:
 
 | Effect | What it simulates |
 | --- | --- |
@@ -27,6 +28,16 @@ Circuit-bent camera simulator for Android. Bend photos from your gallery, or poi
 | Thermal | false-color heat map |
 | Mirror | horizontal / vertical / quad mirror |
 | Pixelate | blocky low-res readout |
+| 1-Bit Dither | ordered Bayer dither down to a few levels |
+| Edge Neon | Sobel edges glowing in their own color |
+| Swirl | twisted center vortex |
+| Fisheye | barrel lens bulge |
+| Prism | radial chromatic aberration |
+| Hue Cycle | hue rotation, animated over time |
+| Kaleido | polar-folded kaleidoscope |
+| Block Invert | macroblocks with inverted or dropped channels |
+| Ghost Trails | phosphor-like feedback trails (temporal) |
+| Slit Scan | each row from an older frame (temporal) |
 
 The dice button builds a random chain; the refresh button re-rolls the random glitch pattern.
 
